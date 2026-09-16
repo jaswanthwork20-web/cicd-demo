@@ -1,26 +1,176 @@
-name: AWS OIDC Test
+name: CI-CD
 
 on:
-  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+  pull_request:
+    branches:
+      - main
+
+
+env:
+  AWS_REGION: us-east-1
+
+  ECR_FRONTEND_REPOSITORY: github-cicd-demo-frontend
+
+  ECR_BACKEND_REPOSITORY: github-cicd-demo-backend
+
 
 jobs:
-  test-aws:
+
+  # ==========================================
+  # CI
+  # ==========================================
+
+  test:
+
+    name: Run Backend Tests
+
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-      id-token: write
-
     steps:
-      - name: Checkout
+
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-          aws-region: us-east-1
 
-      - name: Test AWS identity
+      - name: Setup Python
+        uses: actions/setup-python@v5
+
+        with:
+          python-version: "3.12"
+
+
+      - name: Install dependencies
+
+        working-directory: backend
+
         run: |
-          aws sts get-caller-identity
+          pip install -r requirements.txt
+
+
+      - name: Run tests
+
+        working-directory: backend
+
+        run: |
+          pytest
+
+
+  # ==========================================
+  # BUILD + PUSH TO ECR
+  # ==========================================
+
+  build-and-push:
+
+    name: Build and Push Docker Images
+
+    needs: test
+
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    runs-on: ubuntu-latest
+
+
+    permissions:
+
+      contents: read
+
+      id-token: write
+
+
+    steps:
+
+      # ----------------------------------------
+      # Checkout
+      # ----------------------------------------
+
+      - name: Checkout source code
+
+        uses: actions/checkout@v4
+
+
+      # ----------------------------------------
+      # Configure AWS
+      # ----------------------------------------
+
+      - name: Configure AWS credentials
+
+        uses: aws-actions/configure-aws-credentials@v5
+
+        with:
+
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+
+          aws-region: ${{ env.AWS_REGION }}
+
+
+      # ----------------------------------------
+      # Login to ECR
+      # ----------------------------------------
+
+      - name: Login to Amazon ECR
+
+        id: login-ecr
+
+        uses: aws-actions/amazon-ecr-login@v2
+
+
+      # ----------------------------------------
+      # Build Frontend
+      # ----------------------------------------
+
+      - name: Build frontend Docker image
+
+        run: |
+
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:latest \
+            ./frontend
+
+
+      # ----------------------------------------
+      # Build Backend
+      # ----------------------------------------
+
+      - name: Build backend Docker image
+
+        run: |
+
+          docker build \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
+            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:latest \
+            ./backend
+
+
+      # ----------------------------------------
+      # Push Frontend
+      # ----------------------------------------
+
+      - name: Push frontend image
+
+        run: |
+
+          docker push \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
+
+          docker push \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:latest
+
+
+      # ----------------------------------------
+      # Push Backend
+      # ----------------------------------------
+
+      - name: Push backend image
+
+        run: |
+
+          docker push \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
+
+          docker push \
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:latest
