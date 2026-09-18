@@ -9,25 +9,20 @@ on:
     branches:
       - main
 
-
 env:
   AWS_REGION: us-east-1
-
+  ECR_REGISTRY: 317492541707.dkr.ecr.us-east-1.amazonaws.com
   ECR_FRONTEND_REPOSITORY: github-cicd-demo-frontend
-
   ECR_BACKEND_REPOSITORY: github-cicd-demo-backend
-
 
 jobs:
 
   # ==========================================
-  # CI
+  # JOB 1 - TEST
   # ==========================================
 
   test:
-
     name: Run Backend Tests
-
     runs-on: ubuntu-latest
 
     steps:
@@ -35,151 +30,196 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-
       - name: Setup Python
         uses: actions/setup-python@v5
-
         with:
           python-version: "3.12"
 
-
       - name: Install dependencies
-
         working-directory: backend
-
         run: |
           pip install -r requirements.txt
 
-
       - name: Run tests
-
         working-directory: backend
-
         run: |
           pytest
 
 
   # ==========================================
-  # BUILD + PUSH TO ECR
+  # JOB 2 - BUILD AND PUSH TO ECR
   # ==========================================
 
   build-and-push:
-
     name: Build and Push Docker Images
-
     needs: test
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
 
     runs-on: ubuntu-latest
 
-
     permissions:
-
       contents: read
-
       id-token: write
-
 
     steps:
 
-      # ----------------------------------------
-      # Checkout
-      # ----------------------------------------
-
       - name: Checkout source code
-
         uses: actions/checkout@v4
 
-      - name: Debug GitHub OIDC
-        env:
-          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
-          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
-        run: |
-          echo "Repository: $GITHUB_REPOSITORY"
-          echo "Ref: $GITHUB_REF"
-          echo "Workflow: $GITHUB_WORKFLOW"
-
-
-      # ----------------------------------------
-      # Configure AWS
-      # ----------------------------------------
 
       - name: Configure AWS credentials
-
         uses: aws-actions/configure-aws-credentials@v5
-
         with:
-
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
-
           aws-region: ${{ env.AWS_REGION }}
 
 
-      # ----------------------------------------
-      # Login to ECR
-      # ----------------------------------------
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
 
       - name: Login to Amazon ECR
-
         id: login-ecr
-
         uses: aws-actions/amazon-ecr-login@v2
 
 
-      # ----------------------------------------
+      # ------------------------------------------
       # Build Frontend
-      # ----------------------------------------
+      # ------------------------------------------
 
       - name: Build frontend Docker image
-
         run: |
-
           docker build \
-            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
-            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:latest \
+            -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
             ./frontend
 
 
-      # ----------------------------------------
+      # ------------------------------------------
       # Build Backend
-      # ----------------------------------------
+      # ------------------------------------------
 
       - name: Build backend Docker image
-
         run: |
-
           docker build \
-            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
-            -t ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:latest \
+            -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
             ./backend
 
 
-      # ----------------------------------------
+      # ------------------------------------------
       # Push Frontend
-      # ----------------------------------------
+      # ------------------------------------------
 
       - name: Push frontend image
-
         run: |
-
           docker push \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
-
-          docker push \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_FRONTEND_REPOSITORY }}:latest
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
 
 
-      # ----------------------------------------
+      # ------------------------------------------
       # Push Backend
-      # ----------------------------------------
+      # ------------------------------------------
 
       - name: Push backend image
-
         run: |
-
           docker push \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
 
-          docker push \
-            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_BACKEND_REPOSITORY }}:latest
+
+  # ==========================================
+  # JOB 3 - DEPLOY TO EC2 USING SSM
+  # ==========================================
+
+  deploy:
+    name: Deploy to EC2 using SSM
+
+    needs: build-and-push
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+
+      # ------------------------------------------
+      # Create SSM commands
+      # ------------------------------------------
+
+      - name: Create deployment commands
+        run: |
+          cat > ssm-commands.json <<'EOF'
+          {
+            "commands": [
+              "echo 'Starting deployment...'",
+              "cd /home/ssm-user/github-cicd-demo || exit 1",
+              "export IMAGE_TAG='${{ github.sha }}'",
+              "echo IMAGE_TAG=$IMAGE_TAG",
+              "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 317492541707.dkr.ecr.us-east-1.amazonaws.com",
+              "docker compose pull",
+              "docker compose up -d",
+              "docker image prune -af",
+              "docker ps",
+              "echo 'Deployment completed successfully.'"
+            ]
+          }
+          EOF
+
+
+      # ------------------------------------------
+      # Send command to EC2
+      # ------------------------------------------
+
+      - name: Deploy using AWS Systems Manager
+        id: deploy
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Deploy GitHub commit ${{ github.sha }}" \
+            --parameters file://ssm-commands.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+
+          echo "SSM Command ID:"
+          echo "$COMMAND_ID"
+
+
+      # ------------------------------------------
+      # Wait for deployment
+      # ------------------------------------------
+
+      - name: Wait for deployment
+        run: |
+          aws ssm wait command-executed \
+            --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
+            --instance-id "${{ vars.EC2_INSTANCE_ID }}"
+
+
+      # ------------------------------------------
+      # Show deployment result
+      # ------------------------------------------
+
+      - name: Get deployment output
+        run: |
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
+            --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
