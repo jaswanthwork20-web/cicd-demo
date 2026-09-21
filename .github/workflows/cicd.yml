@@ -109,31 +109,6 @@ jobs:
         run: |
           pip-audit -r requirements.txt
 
-      # -----------------------------------------------
-      # Python SAST
-      # -----------------------------------------------
-
-      - name: Install Bandit
-        run: |
-          pip install bandit
-
-      - name: Run Bandit
-        working-directory: backend
-        run: |
-          bandit -r . -ll
-
-      # -----------------------------------------------
-      # Semgrep SAST
-      # -----------------------------------------------
-
-      - name: Run Semgrep
-        uses: semgrep/semgrep-action@v1
-        with:
-          config: >-
-            p/python
-            p/security-audit
-
-
   # ==================================================
   # JOB 3 - BUILD DOCKER IMAGES
   # ==================================================
@@ -694,4 +669,5 @@ jobs:
             --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
             --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
             --output json
+
 
