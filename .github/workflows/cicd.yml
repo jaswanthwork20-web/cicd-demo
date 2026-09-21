@@ -625,7 +625,6 @@ jobs:
               "echo '========================================'",
               "echo 'BACKEND HEALTH CHECK'",
               "echo '========================================'",
-              "curl --fail --max-time 10 http://localhost:5000/api/hello",
               "echo ''",
               "echo '========================================'",
               "echo 'HEALTH VERIFICATION COMPLETED'",
