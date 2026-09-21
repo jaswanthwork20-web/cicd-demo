@@ -1,4 +1,4 @@
-```yaml
+
 name: CI-CD
 
 on:
@@ -694,4 +694,4 @@ jobs:
             --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
             --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
             --output json
-```
+
