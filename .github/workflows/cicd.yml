@@ -451,7 +451,10 @@ jobs:
 
       - name: Get current deployment version
         id: current
+        shell: bash
         run: |
+
+          set -e
 
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
@@ -464,6 +467,8 @@ jobs:
             --query "Command.CommandId" \
             --output text)
 
+          echo "Version check command: $COMMAND_ID"
+
           sleep 3
 
           CURRENT_VERSION=$(aws ssm get-command-invocation \
@@ -471,6 +476,10 @@ jobs:
             --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
             --query "StandardOutputContent" \
             --output text | tr -d '\r\n')
+
+          if [ -z "$CURRENT_VERSION" ]; then
+            CURRENT_VERSION="none"
+          fi
 
           echo "CURRENT_VERSION=$CURRENT_VERSION"
 
@@ -482,26 +491,42 @@ jobs:
 
       - name: Deploy using SSM
         id: deploy
+        shell: bash
         run: |
 
           cat > ssm-commands.json <<EOF
           {
             "commands": [
               "set -e",
+              "echo '========================================'",
               "echo 'Starting deployment...'",
+              "echo '========================================'",
               "cd /home/ssm-user/github-cicd-demo",
               "export IMAGE_TAG='${{ github.sha }}'",
               "export AWS_REGION='${{ env.AWS_REGION }}'",
               "export ECR_REGISTRY='${{ env.ECR_REGISTRY }}'",
-              "echo IMAGE_TAG=\$IMAGE_TAG",
+              "echo 'IMAGE_TAG='\$IMAGE_TAG",
+              "echo 'Current version before deployment:'",
+              "if [ -f .current_version ]; then cat .current_version; else echo none; fi",
+              "echo 'Saving current version for rollback...'",
+              "if [ -f .current_version ]; then cp .current_version .previous_version; else echo none > .previous_version; fi",
+              "echo 'Previous version:'",
+              "cat .previous_version",
+              "echo 'Logging into ECR...'",
               "aws ecr get-login-password --region \$AWS_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY",
-              "export IMAGE_TAG=\$IMAGE_TAG",
+              "echo 'Pulling new images...'",
               "docker compose pull",
+              "echo 'Starting new containers...'",
               "docker compose up -d",
+              "echo 'Waiting for containers...'",
               "sleep 10",
+              "echo 'Container status:'",
               "docker compose ps",
+              "echo 'Saving current version...'",
               "echo \$IMAGE_TAG > .current_version",
-              "echo 'Deployment completed.'"
+              "echo 'Current version:'",
+              "cat .current_version",
+              "echo 'Deployment completed successfully.'"
             ]
           }
           EOF
@@ -519,32 +544,49 @@ jobs:
           echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_OUTPUT"
 
       # -----------------------------------------------
-      # Wait
+      # Wait + capture output
       # -----------------------------------------------
 
-      - name: Wait for deployment
+      - name: Wait for deployment and capture result
+        shell: bash
         run: |
+
+          COMMAND_ID="${{ steps.deploy.outputs.COMMAND_ID }}"
+
+          echo "Waiting for SSM deployment command..."
+          echo "COMMAND_ID=$COMMAND_ID"
+
+          set +e
 
           aws ssm wait command-executed \
-            --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
+            --command-id "$COMMAND_ID" \
             --instance-id "${{ vars.EC2_INSTANCE_ID }}"
 
-      # -----------------------------------------------
-      # Get deployment output
-      # -----------------------------------------------
+          WAIT_STATUS=$?
 
-      - name: Get deployment result
-        run: |
+          echo ""
+          echo "========================================"
+          echo "SSM DEPLOYMENT RESULT"
+          echo "========================================"
 
           aws ssm get-command-invocation \
-            --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
+            --command-id "$COMMAND_ID" \
             --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
-            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --query '{Status:Status,StatusDetails:StatusDetails,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
             --output json
+
+          echo "========================================"
+
+          if [ "$WAIT_STATUS" -ne 0 ]; then
+            echo "Deployment failed."
+            exit "$WAIT_STATUS"
+          fi
+
+          echo "Deployment succeeded."
 
 
   # ==================================================
-  # JOB 8 - MANUAL/SSM HEALTH VERIFICATION
+  # JOB 8 - HEALTH VERIFICATION
   # ==================================================
 
   verify:
@@ -566,7 +608,9 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify containers
+      - name: Verify containers and backend API
+        id: verify
+        shell: bash
         run: |
 
           cat > verify.json <<'EOF'
@@ -574,11 +618,18 @@ jobs:
             "commands": [
               "set -e",
               "cd /home/ssm-user/github-cicd-demo",
-              "echo 'Container status:'",
+              "echo '========================================'",
+              "echo 'CONTAINER STATUS'",
+              "echo '========================================'",
               "docker compose ps",
-              "echo 'Backend health:'",
+              "echo '========================================'",
+              "echo 'BACKEND HEALTH CHECK'",
+              "echo '========================================'",
               "curl --fail --max-time 10 http://localhost:5000/api/hello",
-              "echo 'Health verification completed.'"
+              "echo ''",
+              "echo '========================================'",
+              "echo 'HEALTH VERIFICATION COMPLETED'",
+              "echo '========================================'"
             ]
           }
           EOF
@@ -593,17 +644,37 @@ jobs:
 
           echo "COMMAND_ID=$COMMAND_ID"
 
-          sleep 5
+          sleep 3
+
+          echo "Waiting for health verification..."
+
+          set +e
 
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
             --instance-id "${{ vars.EC2_INSTANCE_ID }}"
 
+          WAIT_STATUS=$?
+
+          echo ""
+          echo "========================================"
+          echo "HEALTH VERIFICATION RESULT"
+          echo "========================================"
+
           aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
-            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --query '{Status:Status,StatusDetails:StatusDetails,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
             --output json
+
+          echo "========================================"
+
+          if [ "$WAIT_STATUS" -ne 0 ]; then
+            echo "Health verification failed."
+            exit "$WAIT_STATUS"
+          fi
+
+          echo "Health verification succeeded."
 
 
   # ==================================================
@@ -634,21 +705,37 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Rollback using SSM
+        id: rollback
+        shell: bash
         run: |
 
           cat > rollback.json <<EOF
           {
             "commands": [
               "set -e",
+              "echo '========================================'",
+              "echo 'STARTING ROLLBACK'",
+              "echo '========================================'",
               "cd /home/ssm-user/github-cicd-demo",
               "if [ ! -f .previous_version ]; then echo 'No previous version found'; exit 1; fi",
               "export IMAGE_TAG=\$(cat .previous_version)",
-              "echo Rolling back to \$IMAGE_TAG",
-              "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}",
+              "export AWS_REGION='${{ env.AWS_REGION }}'",
+              "export ECR_REGISTRY='${{ env.ECR_REGISTRY }}'",
+              "echo 'Rolling back to:'",
+              "echo \$IMAGE_TAG",
+              "echo 'Logging into ECR...'",
+              "aws ecr get-login-password --region \$AWS_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY",
+              "echo 'Pulling previous images...'",
               "docker compose pull",
+              "echo 'Starting previous containers...'",
               "docker compose up -d",
+              "sleep 10",
+              "echo 'Container status after rollback:'",
+              "docker compose ps",
               "echo \$IMAGE_TAG > .current_version",
-              "echo 'Rollback completed.'"
+              "echo 'Current version after rollback:'",
+              "cat .current_version",
+              "echo 'Rollback completed successfully.'"
             ]
           }
           EOF
@@ -663,12 +750,36 @@ jobs:
 
           echo "Rollback command: $COMMAND_ID"
 
-          sleep 5
+          echo "ROLLBACK_COMMAND_ID=$COMMAND_ID" >> "$GITHUB_OUTPUT"
+
+          sleep 3
+
+          echo "Waiting for rollback..."
+
+          set +e
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ vars.EC2_INSTANCE_ID }}"
+
+          WAIT_STATUS=$?
+
+          echo ""
+          echo "========================================"
+          echo "ROLLBACK RESULT"
+          echo "========================================"
 
           aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
             --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
-            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --query '{Status:Status,StatusDetails:StatusDetails,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
             --output json
 
+          echo "========================================"
 
+          if [ "$WAIT_STATUS" -ne 0 ]; then
+            echo "Rollback failed."
+            exit "$WAIT_STATUS"
+          fi
+
+          echo "Rollback succeeded."
