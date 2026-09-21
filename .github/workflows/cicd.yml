@@ -225,15 +225,24 @@ jobs:
       # -----------------------------------------------
 
       - name: Scan frontend image
-        run: trivy image --severity CRITICAL --exit-code 1 ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}'
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '1'
 
       # -----------------------------------------------
       # Trivy backend
       # -----------------------------------------------
 
       - name: Scan backend image
-        run: trivy image --severity CRITICAL --exit-code 1 ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
-
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}'
+          format: 'table'
+          severity: 'CRITICAL'
+          exit-code: '1'
 
   # ==================================================
   # JOB 5 - SBOM
