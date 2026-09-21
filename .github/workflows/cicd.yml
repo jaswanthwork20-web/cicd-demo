@@ -1,3 +1,4 @@
+```yaml
 name: CI-CD
 
 on:
@@ -9,20 +10,35 @@ on:
     branches:
       - main
 
+# --------------------------------------------------
+# GLOBAL ENVIRONMENT
+# --------------------------------------------------
+
 env:
   AWS_REGION: us-east-1
+
+  AWS_ACCOUNT_ID: "317492541707"
+
   ECR_REGISTRY: 317492541707.dkr.ecr.us-east-1.amazonaws.com
+
   ECR_FRONTEND_REPOSITORY: github-cicd-demo-frontend
   ECR_BACKEND_REPOSITORY: github-cicd-demo-backend
 
+# --------------------------------------------------
+# DEFAULT SECURITY
+# --------------------------------------------------
+
+permissions:
+  contents: read
+
 jobs:
 
-  # ==========================================
-  # JOB 1 - TEST
-  # ==========================================
+  # ==================================================
+  # JOB 1 - UNIT TESTS
+  # ==================================================
 
   test:
-    name: Run Backend Tests
+    name: Unit Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -38,23 +54,304 @@ jobs:
       - name: Install dependencies
         working-directory: backend
         run: |
+          python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install pytest
 
-      - name: Run tests
+      - name: Run pytest
         working-directory: backend
         run: |
           pytest
 
 
-  # ==========================================
-  # JOB 2 - BUILD AND PUSH TO ECR
-  # ==========================================
+  # ==================================================
+  # JOB 2 - SECURITY SCANNING
+  # ==================================================
 
-  build-and-push:
-    name: Build and Push Docker Images
-    needs: test
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+
+    steps:
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------
+      # Secret scanning
+      # -----------------------------------------------
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # -----------------------------------------------
+      # Python setup
+      # -----------------------------------------------
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # -----------------------------------------------
+      # Dependency vulnerability scanning
+      # -----------------------------------------------
+
+      - name: Install pip-audit
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit
+
+      - name: Run dependency vulnerability scan
+        working-directory: backend
+        run: |
+          pip-audit -r requirements.txt
+
+      # -----------------------------------------------
+      # Python SAST
+      # -----------------------------------------------
+
+      - name: Install Bandit
+        run: |
+          pip install bandit
+
+      - name: Run Bandit
+        working-directory: backend
+        run: |
+          bandit -r . -ll
+
+      # -----------------------------------------------
+      # Semgrep SAST
+      # -----------------------------------------------
+
+      - name: Run Semgrep
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/python
+            p/security-audit
+
+
+  # ==================================================
+  # JOB 3 - BUILD DOCKER IMAGES
+  # ==================================================
+
+  build:
+    name: Build Docker Images
+
+    needs:
+      - test
+      - security
+
+    runs-on: ubuntu-latest
 
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------
+      # Build frontend
+      # -----------------------------------------------
+
+      - name: Build frontend image
+        run: |
+          docker build \
+            -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
+            ./frontend
+
+      # -----------------------------------------------
+      # Build backend
+      # -----------------------------------------------
+
+      - name: Build backend image
+        run: |
+          docker build \
+            -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
+            ./backend
+
+      # -----------------------------------------------
+      # Save images
+      # -----------------------------------------------
+
+      - name: Save frontend image
+        run: |
+          docker save \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
+            -o frontend.tar
+
+      - name: Save backend image
+        run: |
+          docker save \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
+            -o backend.tar
+
+      # -----------------------------------------------
+      # Upload Docker images
+      # -----------------------------------------------
+
+      - name: Upload frontend image
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-image
+          path: frontend.tar
+
+      - name: Upload backend image
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-image
+          path: backend.tar
+
+
+  # ==================================================
+  # JOB 4 - CONTAINER SECURITY
+  # ==================================================
+
+  container-security:
+    name: Container Vulnerability Scanning
+
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Download frontend image
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+
+      - name: Download backend image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      # -----------------------------------------------
+      # Load images
+      # -----------------------------------------------
+
+      - name: Load Docker images
+        run: |
+          docker load -i frontend.tar
+          docker load -i backend.tar
+
+      # -----------------------------------------------
+      # Trivy frontend
+      # -----------------------------------------------
+
+      - name: Scan frontend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+      # -----------------------------------------------
+      # Trivy backend
+      # -----------------------------------------------
+
+      - name: Scan backend image
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+
+
+  # ==================================================
+  # JOB 5 - SBOM
+  # ==================================================
+
+  sbom:
+    name: Generate SBOM
+
+    needs:
+      - container-security
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    steps:
+
+      - name: Download frontend image
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+
+      - name: Download backend image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Load images
+        run: |
+          docker load -i frontend.tar
+          docker load -i backend.tar
+
+      # -----------------------------------------------
+      # Install Syft
+      # -----------------------------------------------
+
+      - name: Install Syft
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
+      # -----------------------------------------------
+      # Frontend SBOM
+      # -----------------------------------------------
+
+      - name: Generate frontend SBOM
+        run: |
+          syft \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
+            -o cyclonedx-json=frontend-sbom.json
+
+      # -----------------------------------------------
+      # Backend SBOM
+      # -----------------------------------------------
+
+      - name: Generate backend SBOM
+        run: |
+          syft \
+            ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
+            -o cyclonedx-json=backend-sbom.json
+
+      # -----------------------------------------------
+      # Upload SBOMs
+      # -----------------------------------------------
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            frontend-sbom.json
+            backend-sbom.json
+
+
+  # ==================================================
+  # JOB 6 - PUSH TO ECR
+  # ==================================================
+
+  push-ecr:
+    name: Push Images to Amazon ECR
+
+    needs:
+      - container-security
+      - sbom
 
     runs-on: ubuntu-latest
 
@@ -67,6 +364,24 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
+      - name: Download frontend image
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-image
+
+      - name: Download backend image
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-image
+
+      - name: Load images
+        run: |
+          docker load -i frontend.tar
+          docker load -i backend.tar
+
+      # -----------------------------------------------
+      # AWS OIDC
+      # -----------------------------------------------
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -74,67 +389,67 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
+      # -----------------------------------------------
+      # ECR login
+      # -----------------------------------------------
 
       - name: Login to Amazon ECR
-        id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-
-      # ------------------------------------------
-      # Build Frontend
-      # ------------------------------------------
-
-      - name: Build frontend Docker image
-        run: |
-          docker build \
-            -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
-            ./frontend
-
-
-      # ------------------------------------------
-      # Build Backend
-      # ------------------------------------------
-
-      - name: Build backend Docker image
-        run: |
-          docker build \
-            -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
-            ./backend
-
-
-      # ------------------------------------------
-      # Push Frontend
-      # ------------------------------------------
+      # -----------------------------------------------
+      # Push frontend
+      # -----------------------------------------------
 
       - name: Push frontend image
         run: |
           docker push \
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
 
-
-      # ------------------------------------------
-      # Push Backend
-      # ------------------------------------------
+      # -----------------------------------------------
+      # Push backend
+      # -----------------------------------------------
 
       - name: Push backend image
         run: |
           docker push \
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
 
+      # -----------------------------------------------
+      # Store deployment metadata
+      # -----------------------------------------------
 
-  # ==========================================
-  # JOB 3 - DEPLOY TO EC2 USING SSM
-  # ==========================================
+      - name: Save deployment metadata
+        run: |
+          cat > deployment.json <<EOF
+          {
+            "commit": "${{ github.sha }}",
+            "repository": "${{ github.repository }}",
+            "workflow": "${{ github.workflow }}",
+            "run_id": "${{ github.run_id }}",
+            "frontend_image": "${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}",
+            "backend_image": "${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}"
+          }
+          EOF
+
+      - name: Upload deployment metadata
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-metadata
+          path: deployment.json
+
+
+  # ==================================================
+  # JOB 7 - DEPLOY TO EC2
+  # ==================================================
 
   deploy:
     name: Deploy to EC2 using SSM
 
-    needs: build-and-push
+    needs: push-ecr
 
     runs-on: ubuntu-latest
 
@@ -150,43 +465,71 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
+      # -----------------------------------------------
+      # Save current version for rollback
+      # -----------------------------------------------
 
-      # ------------------------------------------
-      # Create SSM commands
-      # ------------------------------------------
-
-      - name: Create deployment commands
+      - name: Get current deployment version
+        id: current
         run: |
-          cat > ssm-commands.json <<'EOF'
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Get current deployment version" \
+            --parameters 'commands=[
+              "cd /home/ssm-user/github-cicd-demo || exit 1",
+              "if [ -f .current_version ]; then cat .current_version; else echo none; fi"
+            ]' \
+            --query "Command.CommandId" \
+            --output text)
+
+          sleep 3
+
+          CURRENT_VERSION=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
+            --query "StandardOutputContent" \
+            --output text | tr -d '\r\n')
+
+          echo "CURRENT_VERSION=$CURRENT_VERSION"
+
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------
+      # Deployment
+      # -----------------------------------------------
+
+      - name: Deploy using SSM
+        id: deploy
+        run: |
+
+          cat > ssm-commands.json <<EOF
           {
             "commands": [
+              "set -e",
               "echo 'Starting deployment...'",
-              "cd /home/ssm-user/github-cicd-demo || exit 1",
+              "cd /home/ssm-user/github-cicd-demo",
               "export IMAGE_TAG='${{ github.sha }}'",
-              "echo IMAGE_TAG=$IMAGE_TAG",
-              "aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 317492541707.dkr.ecr.us-east-1.amazonaws.com",
+              "export AWS_REGION='${{ env.AWS_REGION }}'",
+              "export ECR_REGISTRY='${{ env.ECR_REGISTRY }}'",
+              "echo IMAGE_TAG=\$IMAGE_TAG",
+              "aws ecr get-login-password --region \$AWS_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY",
+              "export IMAGE_TAG=\$IMAGE_TAG",
               "docker compose pull",
               "docker compose up -d",
-              "docker image prune -af",
-              "docker ps",
-              "echo 'Deployment completed successfully.'"
+              "sleep 10",
+              "docker compose ps",
+              "echo \$IMAGE_TAG > .current_version",
+              "echo 'Deployment completed.'"
             ]
           }
           EOF
 
-
-      # ------------------------------------------
-      # Send command to EC2
-      # ------------------------------------------
-
-      - name: Deploy using AWS Systems Manager
-        id: deploy
-        run: |
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
             --document-name "AWS-RunShellScript" \
@@ -195,31 +538,160 @@ jobs:
             --query "Command.CommandId" \
             --output text)
 
+          echo "COMMAND_ID=$COMMAND_ID"
+
           echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_OUTPUT"
 
-          echo "SSM Command ID:"
-          echo "$COMMAND_ID"
-
-
-      # ------------------------------------------
-      # Wait for deployment
-      # ------------------------------------------
+      # -----------------------------------------------
+      # Wait
+      # -----------------------------------------------
 
       - name: Wait for deployment
         run: |
+
           aws ssm wait command-executed \
             --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
             --instance-id "${{ vars.EC2_INSTANCE_ID }}"
 
+      # -----------------------------------------------
+      # Get deployment output
+      # -----------------------------------------------
 
-      # ------------------------------------------
-      # Show deployment result
-      # ------------------------------------------
-
-      - name: Get deployment output
+      - name: Get deployment result
         run: |
+
           aws ssm get-command-invocation \
             --command-id "${{ steps.deploy.outputs.COMMAND_ID }}" \
             --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
             --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
             --output json
+
+
+  # ==================================================
+  # JOB 8 - MANUAL/SSM HEALTH VERIFICATION
+  # ==================================================
+
+  verify:
+    name: Verify Deployment
+
+    needs: deploy
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify containers
+        run: |
+
+          cat > verify.json <<'EOF'
+          {
+            "commands": [
+              "set -e",
+              "cd /home/ssm-user/github-cicd-demo",
+              "echo 'Container status:'",
+              "docker compose ps",
+              "echo 'Backend health:'",
+              "curl --fail --max-time 10 http://localhost:5000/api/hello",
+              "echo 'Health verification completed.'"
+            ]
+          }
+          EOF
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Verify deployment ${{ github.sha }}" \
+            --parameters file://verify.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "COMMAND_ID=$COMMAND_ID"
+
+          sleep 5
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ vars.EC2_INSTANCE_ID }}"
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
+
+
+  # ==================================================
+  # JOB 9 - ROLLBACK
+  # ==================================================
+
+  rollback:
+    name: Rollback Deployment
+
+    needs:
+      - deploy
+      - verify
+
+    if: failure()
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Rollback using SSM
+        run: |
+
+          cat > rollback.json <<EOF
+          {
+            "commands": [
+              "set -e",
+              "cd /home/ssm-user/github-cicd-demo",
+              "if [ ! -f .previous_version ]; then echo 'No previous version found'; exit 1; fi",
+              "export IMAGE_TAG=\$(cat .previous_version)",
+              "echo Rolling back to \$IMAGE_TAG",
+              "aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}",
+              "docker compose pull",
+              "docker compose up -d",
+              "echo \$IMAGE_TAG > .current_version",
+              "echo 'Rollback completed.'"
+            ]
+          }
+          EOF
+
+          COMMAND_ID=$(aws ssm send-command \
+            --instance-ids "${{ vars.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --comment "Rollback deployment ${{ github.sha }}" \
+            --parameters file://rollback.json \
+            --query "Command.CommandId" \
+            --output text)
+
+          echo "Rollback command: $COMMAND_ID"
+
+          sleep 5
+
+          aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "${{ vars.EC2_INSTANCE_ID }}" \
+            --query '{Status:Status,Output:StandardOutputContent,Error:StandardErrorContent}' \
+            --output json
+```
