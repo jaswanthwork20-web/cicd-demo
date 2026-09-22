@@ -7,7 +7,7 @@ app = Flask(__name__)
 def hello():
     return jsonify(
         {
-            "message": "Hey jASWANTH  , How are you doing? Im doing good",
+            "message": "Hey Jaswanth  , How are you doing? Im doing good",
             "status": "success",
         }
     )
