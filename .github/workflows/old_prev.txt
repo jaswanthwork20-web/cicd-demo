@@ -10,13 +10,13 @@ on:
     branches:
       - main
 
-
-# ==================================================
+# --------------------------------------------------
 # GLOBAL ENVIRONMENT
-# ==================================================
+# --------------------------------------------------
 
 env:
   AWS_REGION: us-east-1
+
   AWS_ACCOUNT_ID: "317492541707"
 
   ECR_REGISTRY: 317492541707.dkr.ecr.us-east-1.amazonaws.com
@@ -24,142 +24,21 @@ env:
   ECR_FRONTEND_REPOSITORY: github-cicd-demo-frontend
   ECR_BACKEND_REPOSITORY: github-cicd-demo-backend
 
-
-# ==================================================
-# DEFAULT PERMISSIONS
-# ==================================================
+# --------------------------------------------------
+# DEFAULT SECURITY
+# --------------------------------------------------
 
 permissions:
   contents: read
 
-
 jobs:
 
   # ==================================================
-  # JOB 1 - SYNTAX CHECK
-  # ==================================================
-
-  syntax:
-    name: Syntax Check
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        working-directory: backend
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Python syntax check
-        working-directory: backend
-        run: |
-          python -m compileall -q .
-
-
-  # ==================================================
-  # JOB 2 - LINTING
-  # ==================================================
-
-  lint:
-    name: Linting
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Ruff
-        run: |
-          python -m pip install --upgrade pip
-          pip install ruff
-
-      - name: Run Ruff
-        working-directory: backend
-        run: |
-          ruff check .
-
-
-  # ==================================================
-  # JOB 3 - UNUSED CODE
-  # ==================================================
-
-  unused-code:
-    name: Unused Code Detection
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Vulture
-        run: |
-          python -m pip install --upgrade pip
-          pip install vulture
-
-      - name: Detect unused code
-        working-directory: backend
-        run: |
-          vulture . --min-confidence 80
-
-
-  # ==================================================
-  # JOB 4 - TYPE CHECKING
-  # ==================================================
-
-  type-check:
-    name: Type Checking
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        working-directory: backend
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install mypy
-
-      - name: Run MyPy
-        working-directory: backend
-        run: |
-          mypy .
-
-
-  # ==================================================
-  # JOB 5 - UNIT TESTS + COVERAGE
+  # JOB 1 - UNIT TESTS
   # ==================================================
 
   test:
-    name: Unit Tests and Coverage
+    name: Unit Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -177,26 +56,16 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install pytest pytest-cov
+          pip install pytest
 
-      - name: Run unit tests
+      - name: Run pytest
         working-directory: backend
         run: |
-          pytest \
-            --cov=. \
-            --cov-report=term-missing \
-            --cov-report=xml \
-            --cov-fail-under=70
-
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: backend/coverage.xml
+          pytest
 
 
   # ==================================================
-  # JOB 6 - SECURITY SCANNING
+  # JOB 2 - SECURITY SCANNING
   # ==================================================
 
   security:
@@ -208,102 +77,48 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Bandit
-        run: |
-          python -m pip install --upgrade pip
-          pip install bandit
-
-      - name: Run Bandit security scan
-        working-directory: backend
-        run: |
-          bandit -r . -ll
-
-
-  # ==================================================
-  # JOB 7 - SECRET DETECTION
-  # ==================================================
-
-  secrets:
-    name: Secret Detection
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout source code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      # -----------------------------------------------
+      # Secret scanning
+      # -----------------------------------------------
 
       - name: Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-
-  # ==================================================
-  # JOB 8 - DEPENDENCY SCANNING
-  # ==================================================
-
-  dependency-scan:
-    name: Dependency Vulnerability Scan
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout source code
-        uses: actions/checkout@v4
+      # -----------------------------------------------
+      # Python setup
+      # -----------------------------------------------
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # -----------------------------------------------
+      # Dependency vulnerability scanning
+      # -----------------------------------------------
+
       - name: Install pip-audit
         run: |
           python -m pip install --upgrade pip
           pip install pip-audit
 
-      - name: Run pip-audit
+      - name: Run dependency vulnerability scan
         working-directory: backend
         run: |
           pip-audit -r requirements.txt
 
-
   # ==================================================
-  # JOB 9 - BUILD DOCKER IMAGES
-  #
-  # IMPORTANT:
-  # This job is protected by GitHub Environment.
-  #
-  # All CI jobs above must pass first.
-  # Then GitHub waits for manual approval.
-  # Only after approval does Docker build start.
+  # JOB 3 - BUILD DOCKER IMAGES
   # ==================================================
 
   build:
     name: Build Docker Images
 
     needs:
-      - syntax
-      - lint
-      - unused-code
-      - type-check
       - test
       - security
-      - secrets
-      - dependency-scan
-
-    # ================================================
-    # MANUAL APPROVAL
-    # ================================================
-
-    environment:
-      name: docker-build-approval
 
     runs-on: ubuntu-latest
 
@@ -317,7 +132,6 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-
       # -----------------------------------------------
       # Build frontend
       # -----------------------------------------------
@@ -327,7 +141,6 @@ jobs:
           docker build \
             -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
             ./frontend
-
 
       # -----------------------------------------------
       # Build backend
@@ -339,9 +152,8 @@ jobs:
             -t ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
             ./backend
 
-
       # -----------------------------------------------
-      # Save frontend image
+      # Save images
       # -----------------------------------------------
 
       - name: Save frontend image
@@ -350,20 +162,14 @@ jobs:
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
             -o frontend.tar
 
-
-      # -----------------------------------------------
-      # Save backend image
-      # -----------------------------------------------
-
       - name: Save backend image
         run: |
           docker save \
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
             -o backend.tar
 
-
       # -----------------------------------------------
-      # Upload frontend image
+      # Upload Docker images
       # -----------------------------------------------
 
       - name: Upload frontend image
@@ -371,11 +177,6 @@ jobs:
         with:
           name: frontend-image
           path: frontend.tar
-
-
-      # -----------------------------------------------
-      # Upload backend image
-      # -----------------------------------------------
 
       - name: Upload backend image
         uses: actions/upload-artifact@v4
@@ -385,7 +186,7 @@ jobs:
 
 
   # ==================================================
-  # JOB 10 - CONTAINER SECURITY
+  # JOB 4 - CONTAINER SECURITY
   # ==================================================
 
   container-security:
@@ -410,16 +211,14 @@ jobs:
         with:
           name: backend-image
 
-
       # -----------------------------------------------
-      # Load Docker images
+      # Load images
       # -----------------------------------------------
 
       - name: Load Docker images
         run: |
           docker load -i frontend.tar
           docker load -i backend.tar
-
 
       # -----------------------------------------------
       # Trivy frontend
@@ -429,10 +228,9 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}'
-          format: table
-          severity: CRITICAL,HIGH
+          format: 'table'
+          severity: 'CRITICAL'
           exit-code: '1'
-
 
       # -----------------------------------------------
       # Trivy backend
@@ -442,13 +240,12 @@ jobs:
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: '${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}'
-          format: table
-          severity: CRITICAL,HIGH
+          format: 'table'
+          severity: 'CRITICAL'
           exit-code: '1'
 
-
   # ==================================================
-  # JOB 11 - SBOM
+  # JOB 5 - SBOM
   # ==================================================
 
   sbom:
@@ -479,7 +276,6 @@ jobs:
           docker load -i frontend.tar
           docker load -i backend.tar
 
-
       # -----------------------------------------------
       # Install Syft
       # -----------------------------------------------
@@ -488,7 +284,6 @@ jobs:
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
             | sh -s -- -b /usr/local/bin
-
 
       # -----------------------------------------------
       # Frontend SBOM
@@ -500,7 +295,6 @@ jobs:
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }} \
             -o cyclonedx-json=frontend-sbom.json
 
-
       # -----------------------------------------------
       # Backend SBOM
       # -----------------------------------------------
@@ -510,7 +304,6 @@ jobs:
           syft \
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }} \
             -o cyclonedx-json=backend-sbom.json
-
 
       # -----------------------------------------------
       # Upload SBOMs
@@ -526,7 +319,7 @@ jobs:
 
 
   # ==================================================
-  # JOB 12 - PUSH TO ECR
+  # JOB 6 - PUSH TO ECR
   # ==================================================
 
   push-ecr:
@@ -547,11 +340,6 @@ jobs:
       - name: Checkout source code
         uses: actions/checkout@v4
 
-
-      # -----------------------------------------------
-      # Download images
-      # -----------------------------------------------
-
       - name: Download frontend image
         uses: actions/download-artifact@v4
         with:
@@ -562,16 +350,10 @@ jobs:
         with:
           name: backend-image
 
-
-      # -----------------------------------------------
-      # Load images
-      # -----------------------------------------------
-
       - name: Load images
         run: |
           docker load -i frontend.tar
           docker load -i backend.tar
-
 
       # -----------------------------------------------
       # AWS OIDC
@@ -583,11 +365,9 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
-
 
       # -----------------------------------------------
       # ECR login
@@ -595,7 +375,6 @@ jobs:
 
       - name: Login to Amazon ECR
         uses: aws-actions/amazon-ecr-login@v2
-
 
       # -----------------------------------------------
       # Push frontend
@@ -606,7 +385,6 @@ jobs:
           docker push \
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_FRONTEND_REPOSITORY }}:${{ github.sha }}
 
-
       # -----------------------------------------------
       # Push backend
       # -----------------------------------------------
@@ -616,9 +394,8 @@ jobs:
           docker push \
             ${{ env.ECR_REGISTRY }}/${{ env.ECR_BACKEND_REPOSITORY }}:${{ github.sha }}
 
-
       # -----------------------------------------------
-      # Deployment metadata
+      # Store deployment metadata
       # -----------------------------------------------
 
       - name: Save deployment metadata
@@ -634,7 +411,6 @@ jobs:
           }
           EOF
 
-
       - name: Upload deployment metadata
         uses: actions/upload-artifact@v4
         with:
@@ -643,7 +419,7 @@ jobs:
 
 
   # ==================================================
-  # JOB 13 - DEPLOY TO EC2
+  # JOB 7 - DEPLOY TO EC2
   # ==================================================
 
   deploy:
@@ -665,14 +441,12 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
-
       # -----------------------------------------------
-      # Get current deployment version
+      # Save current version for rollback
       # -----------------------------------------------
 
       - name: Get current deployment version
@@ -711,9 +485,8 @@ jobs:
 
           echo "CURRENT_VERSION=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
 
-
       # -----------------------------------------------
-      # Deploy using SSM
+      # Deployment
       # -----------------------------------------------
 
       - name: Deploy using SSM
@@ -732,7 +505,7 @@ jobs:
               "export IMAGE_TAG='${{ github.sha }}'",
               "export AWS_REGION='${{ env.AWS_REGION }}'",
               "export ECR_REGISTRY='${{ env.ECR_REGISTRY }}'",
-              "echo 'IMAGE_TAG='$IMAGE_TAG",
+              "echo 'IMAGE_TAG='\$IMAGE_TAG",
               "echo 'Current version before deployment:'",
               "if [ -f .current_version ]; then cat .current_version; else echo none; fi",
               "echo 'Saving current version for rollback...'",
@@ -740,7 +513,7 @@ jobs:
               "echo 'Previous version:'",
               "cat .previous_version",
               "echo 'Logging into ECR...'",
-              "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
+              "aws ecr get-login-password --region \$AWS_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY",
               "echo 'Pulling new images...'",
               "docker compose pull",
               "echo 'Starting new containers...'",
@@ -750,7 +523,7 @@ jobs:
               "echo 'Container status:'",
               "docker compose ps",
               "echo 'Saving current version...'",
-              "echo $IMAGE_TAG > .current_version",
+              "echo \$IMAGE_TAG > .current_version",
               "echo 'Current version:'",
               "cat .current_version",
               "echo 'Deployment completed successfully.'"
@@ -770,9 +543,8 @@ jobs:
 
           echo "COMMAND_ID=$COMMAND_ID" >> "$GITHUB_OUTPUT"
 
-
       # -----------------------------------------------
-      # Wait for deployment
+      # Wait + capture output
       # -----------------------------------------------
 
       - name: Wait for deployment and capture result
@@ -814,7 +586,7 @@ jobs:
 
 
   # ==================================================
-  # JOB 14 - HEALTH VERIFICATION
+  # JOB 8 - HEALTH VERIFICATION
   # ==================================================
 
   verify:
@@ -836,7 +608,6 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
       - name: Verify containers and backend API
         id: verify
         shell: bash
@@ -854,6 +625,7 @@ jobs:
               "echo '========================================'",
               "echo 'BACKEND HEALTH CHECK'",
               "echo '========================================'",
+              "echo ''",
               "echo '========================================'",
               "echo 'HEALTH VERIFICATION COMPLETED'",
               "echo '========================================'"
@@ -905,7 +677,7 @@ jobs:
 
 
   # ==================================================
-  # JOB 15 - ROLLBACK
+  # JOB 9 - ROLLBACK
   # ==================================================
 
   rollback:
@@ -931,7 +703,6 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
       - name: Rollback using SSM
         id: rollback
         shell: bash
@@ -946,13 +717,13 @@ jobs:
               "echo '========================================'",
               "cd /home/ssm-user/github-cicd-demo",
               "if [ ! -f .previous_version ]; then echo 'No previous version found'; exit 1; fi",
-              "export IMAGE_TAG=$(cat .previous_version)",
+              "export IMAGE_TAG=\$(cat .previous_version)",
               "export AWS_REGION='${{ env.AWS_REGION }}'",
               "export ECR_REGISTRY='${{ env.ECR_REGISTRY }}'",
               "echo 'Rolling back to:'",
-              "echo $IMAGE_TAG",
+              "echo \$IMAGE_TAG",
               "echo 'Logging into ECR...'",
-              "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY",
+              "aws ecr get-login-password --region \$AWS_REGION | docker login --username AWS --password-stdin \$ECR_REGISTRY",
               "echo 'Pulling previous images...'",
               "docker compose pull",
               "echo 'Starting previous containers...'",
@@ -960,7 +731,7 @@ jobs:
               "sleep 10",
               "echo 'Container status after rollback:'",
               "docker compose ps",
-              "echo $IMAGE_TAG > .current_version",
+              "echo \$IMAGE_TAG > .current_version",
               "echo 'Current version after rollback:'",
               "cat .current_version",
               "echo 'Rollback completed successfully.'"
@@ -1011,4 +782,3 @@ jobs:
           fi
 
           echo "Rollback succeeded."
-
