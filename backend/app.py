@@ -1,22 +1,25 @@
 from flask import Flask, jsonify
 
-
 app = Flask(__name__)
 
 
 @app.route("/api/hello")
 def hello():
-    return jsonify({
-        "message": "Hey Kumar, How are you doing?Im doing good",
-        "status": "success"
-    })
+    return jsonify(
+        {
+            "message": "Hey Kumar, How are you doing? Im doing good",
+            "status": "success",
+        }
+    )
 
 
 @app.route("/api/health")
 def health():
-    return jsonify({
-        "status": "healthy"
-    })
+    return jsonify(
+        {
+            "status": "healthy",
+        }
+    )
 
 
 if __name__ == "__main__":
